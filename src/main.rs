@@ -82,13 +82,13 @@ fn make(size: usize, num_start: usize, angle: f64, seed: u64) -> RgbImage {
     let mut rng = StdRng::seed_from_u64(seed);
     colors.shuffle(&mut rng);
     let mut lo_cache: HashMap<u64, Vec<LocationOffset>> = HashMap::new();
-    let lo_cache_cap = 100;
+    let lo_cache_cap = 300;
     let start = Instant::now();
     for (num_placed, &color) in colors.iter().enumerate() {
         if num_placed == size * size {
             break;
         }
-        if num_placed.is_power_of_two() {
+        if num_placed.is_power_of_two() || num_placed % (size * size / 20) == 0 {
             println!("{num_placed}: {:?}", start.elapsed());
         }
         if num_placed < num_start {
@@ -191,7 +191,7 @@ fn make(size: usize, num_start: usize, angle: f64, seed: u64) -> RgbImage {
             let old = color_to_location.insert(color, new_location);
             assert!(old.is_none());
         } else {
-            let new_location = location_offsets.iter().copied().filter_map(|lo| {
+            let mut new_location = location_offsets.iter().take(unfilled.vec.len()).copied().filter_map(|lo| {
                 let new = [location[0] as isize + lo[0], location[1] as isize + lo[1]];
                 if new[0] < 0 || new[0] >= size_i || new[1] < 0 || new[1] >= size_i {
                     return None;
@@ -202,7 +202,14 @@ fn make(size: usize, num_start: usize, angle: f64, seed: u64) -> RgbImage {
                 } else {
                     None
                 }
-            }).next().expect("nonempty");
+            }).next();
+            if new_location.is_none() {
+                new_location = unfilled.vec.iter().copied().min_by_key(|unf|
+                    (unf[0] as isize - location[0] as isize).pow(2) +
+                    (unf[1] as isize - location[1] as isize).pow(2) 
+                );
+            }
+            let new_location = new_location.expect("found somewhere");
             let low_angle = rng.random();
             let high_angle = (low_angle + angle) % 1.0;
             let pixel = Pixel {
@@ -228,7 +235,7 @@ fn make(size: usize, num_start: usize, angle: f64, seed: u64) -> RgbImage {
 }
 
 fn main() {
-    let size = 500;
+    let size = 1000;
     let num_start = 40;
     let angle = 0.05;
     let seed = 0;
