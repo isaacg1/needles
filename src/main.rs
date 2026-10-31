@@ -88,7 +88,7 @@ fn make(size: usize, num_start: usize, angle: f64, seed: u64, file_unique: &str)
     colors.shuffle(&mut rng);
     let print_width = format!("{}", size * size).len();
     let mut lo_cache: HashMap<u64, Vec<LocationOffset>> = HashMap::new();
-    let lo_cache_cap = 300;
+    let lo_cache_cap = num_start;
     let start = Instant::now();
     for (num_placed, &color) in colors.iter().enumerate() {
         if num_placed == size * size {
