@@ -1,3 +1,4 @@
+#![feature(impl_trait_in_bindings)]
 use image::RgbImage;
 use rand::prelude::*;
 use std::collections::HashMap;
@@ -58,7 +59,7 @@ impl<T: Copy + Eq + Hash> VecSet<T> {
     }
 }
 
-fn make(size: usize, num_start: usize, angle: f64, seed: u64) -> RgbImage {
+fn make(size: usize, num_start: usize, angle: f64, seed: u64, file_unique: &str) -> RgbImage {
     let mut grid: Vec<Vec<Option<Pixel>>> = vec![vec![None; size]; size];
     let mut color_to_location: HashMap<Color, Location> = HashMap::new();
     let mut unfilled: VecSet<Location> = VecSet::new();
@@ -67,12 +68,16 @@ fn make(size: usize, num_start: usize, angle: f64, seed: u64) -> RgbImage {
             unfilled.insert([i, j]);
         }
     }
-    let mut color_offsets: Vec<ColorOffset> = (-255..=255)
-        .flat_map(|r| (-255..=255).flat_map(move |g| (-255..=255).map(move |b| [r, g, b])))
+    let steps = ((255usize.pow(3) / (size * size)) as f64).powf(1.0 / 3.0) as i64;
+    let cap = 255 / steps;
+    let capu = cap as u8;
+    let stepsu = steps as u8;
+    let mut color_offsets: Vec<ColorOffset> = (-cap..=cap)
+        .flat_map(|r| (-cap..=cap).flat_map(move |g| (-cap..=cap).map(move |b| [r, g, b])))
         .collect();
     color_offsets.sort_by_key(|co| co.map(|c| c.pow(2)).iter().sum::<i64>());
-    let mut colors: Vec<Color> = (0..=255)
-        .flat_map(|r| (0..=255).flat_map(move |g| (0..=255).map(move |b| [r, g, b])))
+    let mut colors: Vec<Color> = (0..=capu)
+        .flat_map(|r| (0..=capu).flat_map(move |g| (0..=capu).map(move |b| [r, g, b])))
         .collect();
     let size_i = size as isize;
     let mut location_offsets: Vec<LocationOffset> = (-size_i..=size_i)
@@ -81,6 +86,7 @@ fn make(size: usize, num_start: usize, angle: f64, seed: u64) -> RgbImage {
     location_offsets.sort_by_key(|lo| lo.map(|l| l.pow(2)).iter().sum::<isize>());
     let mut rng = StdRng::seed_from_u64(seed);
     colors.shuffle(&mut rng);
+    let print_width = format!("{}", size * size).len();
     let mut lo_cache: HashMap<u64, Vec<LocationOffset>> = HashMap::new();
     let lo_cache_cap = 300;
     let start = Instant::now();
@@ -88,8 +94,18 @@ fn make(size: usize, num_start: usize, angle: f64, seed: u64) -> RgbImage {
         if num_placed == size * size {
             break;
         }
-        if num_placed.is_power_of_two() || num_placed % (size * size / 20) == 0 {
+        let print_freq = size * size / 20;
+        if num_placed.is_power_of_two() && num_placed < print_freq || num_placed % print_freq == 0 {
             println!("{num_placed}: {:?}", start.elapsed());
+            let mut image = RgbImage::new(size as u32, size as u32);
+            for i in 0..size {
+                for j in 0..size {
+                    let color = grid[i][j].map_or([capu / 2, capu / 2, capu / 2], |p| p.color);
+                    image.put_pixel(i as u32, j as u32, color.map(|c| c * stepsu).into());
+                }
+            }
+            let progress_filename = format!("progress-{:0print_width$}-{}-{}.png", num_placed, size * size, file_unique);
+            image.save(&progress_filename).expect("available");
         }
         if num_placed < num_start {
             let location = unfilled.remove_random(&mut rng).expect("enough");
@@ -100,6 +116,7 @@ fn make(size: usize, num_start: usize, angle: f64, seed: u64) -> RgbImage {
                 low_angle,
                 high_angle,
             };
+            //println!("{}: {:?} -> {:?}", num_placed, pixel, location);
             assert!(grid[location[0]][location[1]].is_none());
             grid[location[0]][location[1]] = Some(pixel);
             let old = color_to_location.insert(color, location);
@@ -115,11 +132,11 @@ fn make(size: usize, num_start: usize, angle: f64, seed: u64) -> RgbImage {
                     color[2] as i64 + co[2] as i64,
                 ];
                 if new[0] < 0
-                    || new[0] > 255
+                    || new[0] > cap
                     || new[1] < 0
-                    || new[1] > 255
+                    || new[1] > cap
                     || new[2] < 0
-                    || new[2] > 255
+                    || new[2] > cap
                 {
                     None
                 } else {
@@ -135,51 +152,50 @@ fn make(size: usize, num_start: usize, angle: f64, seed: u64) -> RgbImage {
             .expect("found");
         let location = color_to_location[&new_color];
         let pixel = grid[location[0]][location[1]].expect("present");
-        let filtered_los = location_offsets.iter().copied().filter(|&lo| {
-            let angle = ((lo[0] as f64).atan2(lo[1] as f64) / TAU) % 1.0;
+        let filtered_los = location_offsets.iter().filter(|&lo| {
+            let angle = ((lo[0] as f64).atan2(lo[1] as f64) / TAU).rem_euclid(1.0);
+            //println!("{:?}: {}", lo, angle);
             if pixel.low_angle < pixel.high_angle {
                 pixel.low_angle < angle && angle < pixel.high_angle
             } else {
-                pixel.low_angle > angle || angle > pixel.high_angle
+                //println!("{:?}, {:?}: {:?}, {} - {}", location, pixel, lo, angle, out);
+                pixel.low_angle < angle || angle < pixel.high_angle
             }
         });
         if lo_cache.len() < lo_cache_cap && !lo_cache.contains_key(&pixel.low_angle.to_bits()) {
-            lo_cache.insert(pixel.low_angle.to_bits(), filtered_los.clone().collect());
+            lo_cache.insert(
+                pixel.low_angle.to_bits(),
+                filtered_los.clone().copied().collect(),
+            );
         }
-        let maybe_new_location = if let Some(los) = lo_cache.get(&pixel.low_angle.to_bits()) {
-            los.iter()
-                .filter_map(|lo| {
-                    let new = [location[0] as isize + lo[0], location[1] as isize + lo[1]];
-                    if new[0] < 0 || new[0] >= size_i || new[1] < 0 || new[1] >= size_i {
-                        return None;
-                    }
-                    let new = new.map(|n| n as usize);
-                    if unfilled.contains(&new) {
-                        Some(new)
-                    } else {
-                        None
-                    }
-                })
-                .next()
-        } else {
-            filtered_los
-                .filter_map(|lo| {
-                    let new = [location[0] as isize + lo[0], location[1] as isize + lo[1]];
-                    if new[0] < 0 || new[0] >= size_i || new[1] < 0 || new[1] >= size_i {
-                        return None;
-                    }
-                    let new = new.map(|n| n as usize);
-                    if unfilled.contains(&new) {
-                        Some(new)
-                    } else {
-                        None
-                    }
-                })
-                .next()
-        };
+        let los: Box<dyn Iterator<Item = &[isize; 2]>> =
+            if let Some(los) = lo_cache.get(&pixel.low_angle.to_bits()) {
+                Box::new(los.iter())
+            } else {
+                Box::new(filtered_los.clone())
+            };
+        let maybe_new_location = los
+            .filter_map(|lo| {
+                let new = [(location[0] as isize + lo[0]).rem_euclid(size_i), (location[1] as isize + lo[1]).rem_euclid(size_i)];
+                /*
+                if num_placed == 199 && lo[0] < 20 && lo[0] > -20 && lo[1] < 20 && lo[1] > -20 {
+                    println!("{:?} -> {:?}", lo, new);
+                }
+                if new[0] < 0 || new[0] >= size_i || new[1] < 0 || new[1] >= size_i {
+                    return None;
+                }
+                */
+                let new = new.map(|n| n as usize);
+                if unfilled.contains(&new) {
+                    Some(new)
+                } else {
+                    None
+                }
+            })
+            .next();
         if let Some(new_location) = maybe_new_location {
             let new_low = pixel.low_angle;
-            let new_high = (new_low + angle) % 1.0;
+            let new_high = (new_low + angle).rem_euclid(1.0);
             let new_pixel = Pixel {
                 color,
                 low_angle: new_low,
@@ -191,27 +207,46 @@ fn make(size: usize, num_start: usize, angle: f64, seed: u64) -> RgbImage {
             let old = color_to_location.insert(color, new_location);
             assert!(old.is_none());
         } else {
-            let mut new_location = location_offsets.iter().take(unfilled.vec.len()).copied().filter_map(|lo| {
-                let new = [location[0] as isize + lo[0], location[1] as isize + lo[1]];
-                if new[0] < 0 || new[0] >= size_i || new[1] < 0 || new[1] >= size_i {
-                    return None;
-                }
-                let new = new.map(|n| n as usize);
-                if unfilled.contains(&new) {
-                    Some(new)
-                } else {
-                    None
-                }
-            }).next();
+            /*
+            if num_placed <= 4000 {
+                println!("Fallback too early");
+                println!("Num places: {:?}", num_placed);
+                println!("Color: {:?}", color);
+                println!("New color: {:?}", new_color);
+                println!("New color's location: {:?}", location);
+                println!("New color's pixel: {:?}", pixel);
+                println!("Location offset options: {}", filtered_los.count());
+                panic!();
+            }
+            */
+            let mut new_location = location_offsets
+                .iter()
+                .take(unfilled.vec.len())
+                .copied()
+                .filter_map(|lo| {
+                    let new = [(location[0] as isize + lo[0]).rem_euclid(size_i), (location[1] as isize + lo[1]).rem_euclid(size_i)];
+                    /*
+                    if new[0] < 0 || new[0] >= size_i || new[1] < 0 || new[1] >= size_i {
+                        return None;
+                    }
+                    */
+                    let new = new.map(|n| n as usize);
+                    if unfilled.contains(&new) {
+                        Some(new)
+                    } else {
+                        None
+                    }
+                })
+                .next();
             if new_location.is_none() {
-                new_location = unfilled.vec.iter().copied().min_by_key(|unf|
-                    (unf[0] as isize - location[0] as isize).pow(2) +
-                    (unf[1] as isize - location[1] as isize).pow(2) 
-                );
+                new_location = unfilled.vec.iter().copied().min_by_key(|unf| {
+                    (unf[0] as isize - location[0] as isize).pow(2)
+                        + (unf[1] as isize - location[1] as isize).pow(2)
+                });
             }
             let new_location = new_location.expect("found somewhere");
-            let low_angle = rng.random();
-            let high_angle = (low_angle + angle) % 1.0;
+            let low_angle: f64 = rng.random();
+            let high_angle = (low_angle + angle).rem_euclid(1.0);
             let pixel = Pixel {
                 color,
                 low_angle,
@@ -228,7 +263,7 @@ fn make(size: usize, num_start: usize, angle: f64, seed: u64) -> RgbImage {
     for i in 0..size {
         for j in 0..size {
             let color = grid[i][j].expect("filled").color;
-            image.put_pixel(i as u32, j as u32, color.into());
+            image.put_pixel(i as u32, j as u32, color.map(|c| c * stepsu).into());
         }
     }
     image
@@ -239,8 +274,9 @@ fn main() {
     let num_start = 40;
     let angle = 0.05;
     let seed = 0;
-    let filename = format!("img-{}-{}-{}-{}.png", size, num_start, angle, seed);
+    let file_unique = format!("{}-{}-{}-{}", size, num_start, angle, seed);
+    let filename = format!("img-{}.png", file_unique);
     println!("{}", filename);
-    let image = make(size, num_start, angle, seed);
+    let image = make(size, num_start, angle, seed, &file_unique);
     image.save(&filename).expect("available");
 }
